@@ -1,1 +1,3 @@
-# Emotion-Detection-text-2
+full dataset 
+seven emotions
+debert
