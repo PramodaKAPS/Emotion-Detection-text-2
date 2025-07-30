@@ -1,63 +1,57 @@
+# train.py (updated for further reduced dataset size and epochs)
+
 import os
 from transformers import AutoTokenizer
 from data_utils import load_and_filter_goemotions, oversample_training_data, prepare_tokenized_datasets
-from model_utils import create_torch_datasets, setup_model_and_optimizer, compile_and_train, save_model_and_tokenizer, evaluate_model
+from model_utils import create_tf_datasets, setup_model_and_optimizer, compile_and_train, save_model_and_tokenizer, evaluate_model
+import tensorflow as tf  # For early stopping callback
 
-
-def train_emotion_model(cache_dir, save_path, selected_emotions, num_train=0, epochs=5, batch_size=32):
-    train_df, valid_df, test_df, sel_indices = load_and_filter_goemotions(cache_dir, selected_emotions, num_train)
-    oversampled_train_df = oversample_training_data(train_df)
-    
-    tokenizer = AutoTokenizer.from_pretrained("microsoft/deberta-v3-base", cache_dir=cache_dir)
-    tokenized_train, tokenized_valid, tokenized_test = prepare_tokenized_datasets(tokenizer, oversampled_train_df, valid_df, test_df)
-    
-    tokenized_train, tokenized_valid, tokenized_test = create_torch_datasets(tokenized_train, tokenized_valid, tokenized_test, sel_indices)
-    
-    model, optimizer = setup_model_and_optimizer("microsoft/deberta-v3-base", len(selected_emotions), epochs, 1e-5, cache_dir)
-    
-    model = compile_and_train(model, optimizer, tokenized_train, tokenized_valid, tokenizer, epochs, batch_size)  # Pass tokenizer
-    
-    save_model_and_tokenizer(model, tokenizer, save_path)
-    
-    metrics = evaluate_model(model, tokenized_test, tokenizer, batch_size)  # Pass tokenizer
-    
-    return metrics
-
-
-if __name__ == "__main__":
+def main():
     cache_dir = "/root/huggingface_cache"
     save_path = "/root/emotion_model"
-    emotions = ["anger", "sadness", "happiness", "disgust", "fear", "surprise", "neutral"]
+    emotions = ["anger", "sadness", "joy", "disgust", "fear", "surprise", "neutral"]
     
-    # Training parameters for improved accuracy
+    # Training parameters - Reduced to 500 samples and 2 epochs for very fast training
     config = {
-        "num_train": 0,  # Full dataset
-        "num_epochs": 5,  # Increased epochs
-        "batch_size": 8,  # Reduced to avoid OOM
-        "learning_rate": 1e-5  # Lower LR for stability
+        "num_train": 500,  # Reduced to 500 (before oversampling)
+        "num_epochs": 2,   # Reduced to 2 epochs
+        "batch_size": 8,
+        "learning_rate": 5e-6
     }
     
-    print("🚀 Starting Emotion Detection Training")
+    print("🚀 Starting Emotion Detection Training with Advanced Handling")
     print("=" * 60)
     print(f"📊 Training Configuration:")
     print(f"   - Cache directory: {cache_dir}")
     print(f"   - Save path: {save_path}")
     print(f"   - Selected emotions: {emotions}")
-    print(f"   - Training samples: Full dataset")
+    print(f"   - Training samples: {config['num_train']} (before oversampling)")
     print(f"   - Epochs: {config['num_epochs']}")
     print(f"   - Batch size: {config['batch_size']}")
     print(f"   - Learning rate: {config['learning_rate']}")
     print("-" * 60)
     
     try:
-        metrics = train_emotion_model(
-            cache_dir=cache_dir,
-            save_path=save_path,
-            selected_emotions=emotions,
-            num_train=config["num_train"],
-            epochs=config["num_epochs"],
-            batch_size=config["batch_size"]
+        train_df, valid_df, test_df, sel_indices = load_and_filter_goemotions(
+            cache_dir, emotions, config["num_train"], use_advanced_emoji=True, handle_short_sentences=True
         )
+        oversampled_train_df = oversample_training_data(train_df)
+        
+        tokenizer = AutoTokenizer.from_pretrained("allenai/longformer-base-4096", cache_dir=cache_dir)
+        tokenized_train, tokenized_valid, tokenized_test = prepare_tokenized_datasets(tokenizer, oversampled_train_df, valid_df, test_df)
+        
+        tf_train, tf_val, tf_test = create_tf_datasets(tokenized_train, tokenized_valid, tokenized_test, tokenizer, sel_indices, config["batch_size"])
+        
+        model, optimizer = setup_model_and_optimizer("allenai/longformer-base-4096", len(emotions), tf_train, config["num_epochs"], config["learning_rate"], cache_dir)
+        
+        # Add early stopping (optional, but helps if validation plateaus early)
+        early_stopping = tf.keras.callbacks.EarlyStopping(monitor='val_loss', patience=1, restore_best_weights=True)
+        
+        model = compile_and_train(model, optimizer, tf_train, tf_val, config["num_epochs"], callbacks=[early_stopping])  # Pass callbacks
+        
+        save_model_and_tokenizer(model, tokenizer, save_path)
+        
+        metrics = evaluate_model(model, tf_test, emotions)  # This plots the confusion matrix
         
         print("\n🎉 Training completed successfully!")
         print(f"📊 Final test results: {metrics}")
@@ -66,3 +60,6 @@ if __name__ == "__main__":
     except Exception as e:
         print(f" Training failed: {e}")
         raise
+
+if __name__ == "__main__":
+    main()
